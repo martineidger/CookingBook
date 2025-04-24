@@ -4,9 +4,9 @@
 *.vs/
 *.vscode/
 
-# Папки сборки
-bin/
-obj/
+# Папки сборки (для всех микросервисов)
+**/bin/
+**/obj/
 
 # Папки зависимостей
 packages/
@@ -20,6 +20,14 @@ packages/
 *.sublime-project
 *.sublime-workspace
 
-# Файлы конфигурации
+# Конфигурационные файлы
 appsettings.Development.json
 appsettings.Production.json
+
+# Служебные файлы
+*.db
+*.pdb
+
+# Директории для тестов
+TestResults/
+*.TestResults/
