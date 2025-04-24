@@ -1,0 +1,25 @@
+# Системные файлы
+*.user
+*.suo
+*.vs/
+*.vscode/
+
+# Папки сборки
+bin/
+obj/
+
+# Папки зависимостей
+packages/
+*.nupkg
+
+# Логи
+*.log
+
+# Настройки IDE
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Файлы конфигурации
+appsettings.Development.json
+appsettings.Production.json
