@@ -17,6 +17,7 @@ packages/
 
 # Настройки IDE
 .idea/
+.vs/
 *.sublime-project
 *.sublime-workspace
 
