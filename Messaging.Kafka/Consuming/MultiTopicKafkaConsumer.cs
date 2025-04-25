@@ -1,7 +1,7 @@
 ﻿using Confluent.Kafka;
 using Messaging.Kafka.Common;
 using Messaging.Kafka.Consuming.Abstractions;
-using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
@@ -10,98 +10,112 @@ using System.Threading.Tasks;
 
 namespace Messaging.Kafka.Consuming
 {
-    public class MultiTopicKafkaConsumer<TMessage> : BackgroundService
+    public class MultiTopicKafkaConsumer<TKey> : IDisposable
     {
-        private readonly IConsumer<string, TMessage> _consumer;
-        private readonly IMultiTopicMessageHandler<TMessage> _messageHandler;
-        private readonly IReadOnlyCollection<string> _topics;
+        private readonly KafkaSettings _config;
+        private readonly ILogger<MultiTopicKafkaConsumer<TKey>> _logger;
+        private readonly Dictionary<string, Task> _consumptionTasks = new();
         private readonly CancellationTokenSource _cts = new();
+        private bool _disposed;
 
         public MultiTopicKafkaConsumer(
-            IOptions<KafkaSettings> kafkaSettings,
-            IMultiTopicMessageHandler<TMessage> messageHandler)
+            IOptions<KafkaSettings> config,
+            ILogger<MultiTopicKafkaConsumer<TKey>> logger)
         {
-            if (kafkaSettings?.Value == null)
-                throw new ArgumentNullException(nameof(kafkaSettings));
+            _config = config.Value;
+            _logger = logger;
+        }
 
-            if (string.IsNullOrEmpty(kafkaSettings.Value.BootstrapServers))
-                throw new ArgumentException("BootstrapServers is not configured");
+        public void Subscribe<TMessage>(
+            string topic,
+            IMessageHandler<TMessage> handler,
+            string? groupId = null) where TMessage : class
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(MultiTopicKafkaConsumer<TKey>));
+            if (string.IsNullOrEmpty(topic)) throw new ArgumentNullException(nameof(topic));
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
 
-            if (string.IsNullOrEmpty(kafkaSettings.Value.GroupId))
-                throw new ArgumentException("GroupId is not configured");
-
-            _topics = kafkaSettings.Value.Topics ?? throw new ArgumentException("Topics are not configured");
-            _messageHandler = messageHandler ?? throw new ArgumentNullException(nameof(messageHandler));
-
-            var config = new ConsumerConfig
+            var consumerConfig = new ConsumerConfig
             {
-                BootstrapServers = kafkaSettings.Value.BootstrapServers,
-                GroupId = kafkaSettings.Value.GroupId,
+                BootstrapServers = _config.BootstrapServers,
+                GroupId = groupId ?? _config.GroupId,
                 AutoOffsetReset = AutoOffsetReset.Earliest,
                 EnableAutoCommit = false
             };
 
-            _consumer = new ConsumerBuilder<string, TMessage>(config)
+            var consumer = new ConsumerBuilder<TKey, TMessage>(consumerConfig)
                 .SetValueDeserializer(new KafkaDeserializer<TMessage>())
-                .SetErrorHandler((_, e) => Console.WriteLine($"Kafka error: {e.Reason}"))
+                .SetErrorHandler((_, error) => _logger.LogError($"Kafka error: {error.Reason}"))
                 .Build();
+
+            consumer.Subscribe(topic);
+
+            var task = Task.Run(() => ConsumeMessages(consumer, handler, topic, _cts.Token), _cts.Token);
+            _consumptionTasks.Add(topic, task);
         }
 
-        protected override Task ExecuteAsync(CancellationToken stoppingToken)
+        private async Task ConsumeMessages<TMessage>(
+            IConsumer<TKey, TMessage> consumer,
+            IMessageHandler<TMessage> handler,
+            string topic,
+            CancellationToken ct) where TMessage : class
         {
-            return Task.Run(() => ConsumeAsync(stoppingToken), stoppingToken);
-        }
-
-        private async Task ConsumeAsync(CancellationToken stoppingToken)
-        {
-            _consumer.Subscribe(_topics);
-
             try
             {
-                while (!stoppingToken.IsCancellationRequested)
+                while (!ct.IsCancellationRequested)
                 {
                     try
                     {
-                        var result = _consumer.Consume(stoppingToken);
-                        await _messageHandler.HandleAsync(result.Message.Value, result.Topic, stoppingToken);
-                        _consumer.StoreOffset(result);
+                        var result = consumer.Consume(ct);
+                        if (result?.Message?.Value == null)
+                        {
+                            _logger.LogWarning($"Null message received from topic {topic}");
+                            continue;
+                        }
+
+                        await handler.HandleAsync(result.Message.Value, ct);
+                        consumer.Commit(result);
                     }
                     catch (ConsumeException ex)
                     {
-                        Console.WriteLine($"Error consuming message: {ex.Error.Reason}");
+                        _logger.LogError(ex, $"Consume error in topic {topic}: {ex.Error.Reason}");
+                        await Task.Delay(1000, ct);
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Error processing message: {ex.Message}");
+                        _logger.LogError(ex, $"Unexpected error processing message in topic {topic}");
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation($"Consumption stopped for topic {topic}");
+            }
             finally
             {
-                _consumer.Close();
+                consumer.Close();
+                consumer.Dispose();
             }
         }
 
-        public override async Task StopAsync(CancellationToken cancellationToken)
+        public void Dispose()
         {
-            _cts.Cancel();
+            if (_disposed) return;
 
             try
             {
-                _consumer?.Close();
-                _consumer?.Dispose();
+                _cts.Cancel();
+                Task.WaitAll(_consumptionTasks.Values.ToArray(), TimeSpan.FromSeconds(5));
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error during consumer shutdown: {ex.Message}");
+                _logger.LogError(ex, "Error during consumer disposal");
             }
-        }
-
-        public override void Dispose()
-        {
-            _cts?.Dispose();
-            _consumer?.Dispose();
-            base.Dispose();
+            finally
+            {
+                _cts.Dispose();
+                _disposed = true;
+            }
         }
     }
 }

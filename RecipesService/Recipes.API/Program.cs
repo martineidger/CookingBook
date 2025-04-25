@@ -29,7 +29,7 @@ app.MapGet("/get-user", async (UserInfoService userInfoService, string id) =>
     return Results.Ok(info);
 });
 
-app.MapGet("/daily-recipe", (IKafkaProducer<DailyRecipe> producer) => {
+app.MapPost("/daily-recipe", (IKafkaProducer<DailyRecipe> producer) => {
     producer.ProduceAsync(new DailyRecipe()
     {
         Name = "Test",
