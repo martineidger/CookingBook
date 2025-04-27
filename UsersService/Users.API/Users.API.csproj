@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <Folder Include="Protos\" />
+    <Folder Include="Controllers\" />
   </ItemGroup>
 
 </Project>
